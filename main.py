@@ -15,11 +15,17 @@ Method (standard library only, deterministic, offline):
      launch whose biggest market (the US) unlocks at 05:00/08:00 UTC, so its
      audience builds through the day exactly like these.
   2. For each hour h, take the empirical distribution of log(viewers_h /
-     viewers_1) across the selected launches: the median is the central
-     forecast, the 5/25/75/95 percentiles the spread, widened x1.2 around
-     the median (calibrated by leave-one-out cross-validation on the
-     comparables: pinball loss ~0.20 vs ~0.28 for the persistence baseline
-     on day-building launches).
+     viewers_1) across the selected launches. The central forecast is a
+     blend: half the empirical median, half a per-hour OLS prediction of
+     the log-ratio from log(hour-1 viewers) — bigger launches grow less
+     through the day (corr about -0.6 at hour 24), so the plain median
+     over-predicts the evening rise for a mega launch like GTA VI. The
+     5/25/75/95 percentiles are the spread around the empirical median,
+     widened x1.2 for hours 2-8 and x1.4 for hours 9-24 (the building day,
+     where the scale extrapolation bites). Calibrated by leave-one-out
+     cross-validation on the comparables: pinball loss ~0.20 on
+     day-building launches (~0.29 on the wider eligible set) vs ~0.28
+     (~0.26) for the persistence baseline.
   3. Fallbacks if too few launches qualify: relax to hour-1 >= 20% of peak
      with a quiet pre-release, then to every comparable with an hour-1
      print, then to the persistence baseline. So the program always emits a
@@ -47,7 +53,12 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 # Spread widening around the median, calibrated by leave-one-out CV.
-SPREAD = 1.2
+# Hours 2-8 (pre-unlock night) use 1.2; hours 9-24 (the building day,
+# where the scale extrapolation bites) use 1.4. LOO on day-building
+# targets is unchanged (0.199 vs 0.200) while the wider eligible set
+# improves (0.286 vs 0.292).
+SPREAD_EARLY = 1.2
+SPREAD_LATE = 1.4
 # Day-building window: hour-1 viewers as a share of the release-day peak.
 LO_SHARE = 0.20
 HI_SHARE = 0.75
@@ -100,24 +111,27 @@ def hourly_means(comp):
 
 
 def log_ratios(comp):
-    """log(viewers_h / viewers_1) for h = 2..24, or None if hour 1 is unusable."""
+    """log(viewers_h / viewers_1) for h = 2..24, plus hour-1 share of the
+    release-day peak, the pre-release ratio, and hour-1 viewers (v1) itself.
+    Returns (ratios, share, pre_ratio, v1), or (None, None, None, None)
+    if hour 1 is unusable."""
     m = hourly_means(comp)
     if 1 not in m or m[1] <= 0:
-        return None, None, None
+        return None, None, None, None
     v1 = m[1]
     day = {h: m[h] for h in range(1, 25) if h in m}
     if not day:
-        return None, None, None
+        return None, None, None, None
     peak = max(day.values())
     ratios = {}
     for h in range(2, 25):
         if h in m and m[h] > 0:
             ratios[h] = math.log(m[h] / v1)
     if len(ratios) < 20:
-        return None, None, None
+        return None, None, None, None
     pre = [m[h] for h in range(-24, 0) if h in m]
     pre24 = sum(pre) / len(pre) if pre else 0.0
-    return ratios, v1 / peak if peak > 0 else 0.0, pre24 / v1 if v1 else 0.0
+    return ratios, v1 / peak if peak > 0 else 0.0, pre24 / v1 if v1 else 0.0, v1
 
 
 def is_early_access(comp):
@@ -130,25 +144,61 @@ def is_free_to_play(comp):
 
 
 def select_training(comparables):
-    """Day-building console launches, with a fallback chain."""
+    """Day-building console launches, with a fallback chain.
+
+    Returns a list of (ratios, v1) pairs: each launch's log-ratio curve and
+    its hour-1 viewers, so the median can be adjusted for launch scale."""
     parsed = []
     for comp in comparables or []:
-        ratios, share, pre_ratio = log_ratios(comp)
+        ratios, share, pre_ratio, v1 = log_ratios(comp)
         if ratios is None:
             continue
-        parsed.append((ratios, share, pre_ratio, comp))
+        parsed.append((ratios, share, pre_ratio, v1, comp))
     day_building = [
-        r for r, s, p, c in parsed
+        (r, v) for r, s, p, v, c in parsed
         if LO_SHARE <= s <= HI_SHARE and not is_early_access(c) and not is_free_to_play(c)
     ]
     if len(day_building) >= MIN_TRAIN:
         return day_building
-    quiet = [r for r, s, p, c in parsed if s >= LO_SHARE and p <= 0.6]
+    quiet = [(r, v) for r, s, p, v, c in parsed if s >= LO_SHARE and p <= 0.6]
     if len(quiet) >= MIN_TRAIN:
         return quiet
     if len(parsed) >= MIN_TRAIN:
-        return [r for r, s, p, c in parsed]
+        return [(r, v) for r, s, p, v, c in parsed]
     return []
+
+
+# Scale-regression blend weight for the central forecast. Bigger launches
+# grow less through the day (within day-building launches, corr(log v1,
+# log-ratio at hour 24) is about -0.6): the plain empirical median, which
+# ignores launch size, over-predicts the evening rise for a mega launch
+# like GTA VI. So the median is a 50/50 blend of the empirical median and
+# a per-hour OLS prediction of the log-ratio from log(hour-1 viewers).
+# Leave-one-out CV on the comparables: blend 0.5 gives pinball ~0.199 on
+# day-building targets (v1: ~0.200) and ~0.292 on the wider eligible set
+# (v1: ~0.325); the wins concentrate on the biggest launches (ELDEN RING
+# 0.363 -> 0.181, Cyberpunk 2077 0.415 -> 0.229), the closest scale
+# analogues to GTA VI.
+BLEND_W = 0.5
+
+
+def reg_med(train, p1, h):
+    """OLS prediction of log(viewers_h / viewers_1) from log(hour-1 viewers).
+
+    train is a list of (ratios, v1) pairs. Returns None when too few points
+    have this hour."""
+    pts = [(math.log(v), r[h]) for r, v in train if h in r and v > 0]
+    if len(pts) < 5:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    mx = sum(xs) / len(xs)
+    my = sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx <= 0:
+        return my
+    b = sum((x - mx) * (y - my) for x, y in pts) / sxx
+    return (my - b * mx) + b * math.log(max(1.0, p1))
 
 
 def persistence_quantiles(p1, h):
@@ -168,10 +218,16 @@ def forecast_case(case, name):
     for row in case["forecast"]:
         h = row["hour"]
         if train:
-            vals = [r[h] for r in train if h in r]
+            vals = [r[h] for r, _v in train if h in r]
             qs = quantiles(vals)
             med = qs[2]
-            raw = [p1 * math.exp(med + (x - med) * SPREAD) for x in qs]
+            # Blend the empirical median with the scale-regression prediction
+            # for this launch's hour-1 size; the spread stays around the
+            # empirical median.
+            reg = reg_med(train, p1, h)
+            m = med if reg is None else (1.0 - BLEND_W) * med + BLEND_W * reg
+            spread = SPREAD_EARLY if h <= 8 else SPREAD_LATE
+            raw = [p1 * math.exp(m + (x - med) * spread) for x in qs]
         else:
             raw = persistence_quantiles(p1, h)
         # Round half-up to 2 decimals, enforce > 0, <= 1e9, non-decreasing.
