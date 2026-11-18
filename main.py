@@ -21,11 +21,10 @@ Method (standard library only, deterministic, offline):
      through the day (corr about -0.6 at hour 24), so the plain median
      over-predicts the evening rise for a mega launch like GTA VI. The
      5/25/75/95 percentiles are the spread around the empirical median,
-     widened x1.2 for hours 2-8 and x1.4 for hours 9-24 (the building day,
-     where the scale extrapolation bites). Calibrated by leave-one-out
-     cross-validation on the comparables: pinball loss ~0.20 on
-     day-building launches (~0.29 on the wider eligible set) vs ~0.28
-     (~0.26) for the persistence baseline.
+     widened x1.2 for all hours 2-24. Calibrated by leave-one-out
+     cross-validation on the comparables: pinball loss ~0.19 on
+     day-building launches (~0.25 on the wider eligible set) vs ~0.20
+     (~0.29) for v2 and ~0.28 (~0.26) for the persistence baseline.
   3. Fallbacks if too few launches qualify: relax to hour-1 >= 20% of peak
      with a quiet pre-release, then to every comparable with an hour-1
      print, then to the persistence baseline. So the program always emits a
@@ -53,15 +52,19 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 # Spread widening around the median, calibrated by leave-one-out CV.
-# Hours 2-8 (pre-unlock night) use 1.2; hours 9-24 (the building day,
-# where the scale extrapolation bites) use 1.4. LOO on day-building
-# targets is unchanged (0.199 vs 0.200) while the wider eligible set
-# improves (0.286 vs 0.292).
+# Hours 2-8 and 9-24 both use 1.2 (v2 used 1.2 early / 1.4 late): with the
+# wider training window and the stronger late blend, the late spread of
+# 1.4 over-widens — 1.2/1.2 improves the day-building LOO (0.193 -> 0.189
+# at blend 0.3/0.7) while keeping the wider eligible set flat.
 SPREAD_EARLY = 1.2
-SPREAD_LATE = 1.4
+SPREAD_LATE = 1.2
 # Day-building window: hour-1 viewers as a share of the release-day peak.
+# HI_SHARE is 0.90 (v2 used 0.75): widening the window adds exactly one
+# launch to the training set — Cyberpunk 2077 (share 0.797, hour-1
+# 852k viewers), the closest mega-launch scale analogue to GTA VI.
+# LOO: window 0.75 -> 0.90 alone moves C 0.199 -> 0.196 and A 0.286 -> 0.264.
 LO_SHARE = 0.20
-HI_SHARE = 0.75
+HI_SHARE = 0.90
 MIN_TRAIN = 5
 
 
@@ -168,18 +171,23 @@ def select_training(comparables):
     return []
 
 
-# Scale-regression blend weight for the central forecast. Bigger launches
-# grow less through the day (within day-building launches, corr(log v1,
-# log-ratio at hour 24) is about -0.6): the plain empirical median, which
-# ignores launch size, over-predicts the evening rise for a mega launch
-# like GTA VI. So the median is a 50/50 blend of the empirical median and
-# a per-hour OLS prediction of the log-ratio from log(hour-1 viewers).
-# Leave-one-out CV on the comparables: blend 0.5 gives pinball ~0.199 on
-# day-building targets (v1: ~0.200) and ~0.292 on the wider eligible set
-# (v1: ~0.325); the wins concentrate on the biggest launches (ELDEN RING
-# 0.363 -> 0.181, Cyberpunk 2077 0.415 -> 0.229), the closest scale
-# analogues to GTA VI.
-BLEND_W = 0.5
+# Scale-regression blend weights for the central forecast, split by hour.
+# Bigger launches grow less through the day (within day-building launches,
+# corr(log v1, log-ratio at hour 24) is about -0.6): the plain empirical
+# median, which ignores launch size, over-predicts the evening rise for a
+# mega launch like GTA VI. So the median is a blend of the empirical median
+# and a per-hour OLS prediction of the log-ratio from log(hour-1 viewers).
+# The regression is most trustworthy late in the day, where the scale
+# effect is strongest and the OLS slope is best identified, so the blend
+# leans on it more there: 20% early (hours 2-8), 80% late (hours 9-24).
+# Leave-one-out CV on the comparables: this per-hour blend (with the wider
+# window and spread 1.2/1.2) gives pinball ~0.188 on day-building targets
+# (v2: ~0.199) and ~0.251 on the wider eligible set (v2: ~0.286); the wins
+# concentrate on the biggest launches (ELDEN RING 0.363 -> 0.144 in the
+# v2-vs-v3 per-target comparison on the eligible set, Cyberpunk 2077
+# 0.415 -> 0.243), the closest scale analogues to GTA VI.
+BLEND_EARLY = 0.2
+BLEND_LATE = 0.8
 
 
 def reg_med(train, p1, h):
@@ -225,7 +233,8 @@ def forecast_case(case, name):
             # for this launch's hour-1 size; the spread stays around the
             # empirical median.
             reg = reg_med(train, p1, h)
-            m = med if reg is None else (1.0 - BLEND_W) * med + BLEND_W * reg
+            w = BLEND_EARLY if h <= 8 else BLEND_LATE
+            m = med if reg is None else (1.0 - w) * med + w * reg
             spread = SPREAD_EARLY if h <= 8 else SPREAD_LATE
             raw = [p1 * math.exp(m + (x - med) * spread) for x in qs]
         else:

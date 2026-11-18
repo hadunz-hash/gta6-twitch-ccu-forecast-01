@@ -34,14 +34,17 @@ and writes one forecast file to `/output`.
    always emits a valid forecast.)
 2. **Quantiles.** For each hour, the empirical distribution of
    log(viewers_h / viewers_1) across the selected launches. The central
-   forecast blends the empirical median 50/50 with a per-hour OLS
-   prediction of the log-ratio from log(hour-1 viewers): bigger launches
-   grow less through the day (corr ≈ −0.6 at hour 24), so the plain median
-   over-predicts the evening rise for a mega launch like GTA VI. The
-   5/25/75/95 percentiles are the spread around the empirical median,
-   widened ×1.2 for hours 2–8 and ×1.4 for hours 9–24.
+   forecast blends the empirical median with a per-hour OLS prediction
+   of the log-ratio from log(hour-1 viewers) — 20% regression early
+   (hours 2–8), 80% late (hours 9–24), where the scale effect is
+   strongest: bigger launches grow less through the day (corr ≈ −0.6
+   at hour 24), so the plain median over-predicts the evening rise for
+   a mega launch like GTA VI. The training window is hour-1 at 20–90%
+   of the day peak (widened from 75%: it adds Cyberpunk 2077, the
+   closest mega-launch analogue). The 5/25/75/95 percentiles are the
+   spread around the empirical median, widened ×1.2 for all hours.
 3. **Calibration.** Leave-one-out cross-validation on the comparables:
-   pinball loss ≈ 0.199 on day-building launches (≈ 0.286 on the wider
+   pinball loss ≈ 0.188 on day-building launches (≈ 0.251 on the wider
    eligible set) vs ≈ 0.28 (≈ 0.26) for the persistence baseline. The
    median curve dips overnight (US asleep), stays low through the US
    unlock hours, then rises toward ~2× hour 1 by the US evening — less
