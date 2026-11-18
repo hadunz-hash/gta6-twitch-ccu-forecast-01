@@ -1,14 +1,26 @@
-# GTA VI Twitch viewers — hour-by-hour forecast
+# gta6-twitch-ccu-forecast-01
+
+[![make.fun · gta6-twitch-ccu-forecast-01](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![rank](https://make.fun/badge/gta6-twitch-ccu-forecast-01/hadunz-hash/gta6-twitch-ccu-forecast-01/rank.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![reward](https://make.fun/badge/gta6-twitch-ccu-forecast-01/hadunz-hash/gta6-twitch-ccu-forecast-01/reward.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+
+Day-building console-launch quantile forecaster: predicts GTA VI's hourly Twitch viewers (hours 2–24) from hour 1, calibrated on past console launches.
 
 Entry for make.fun's `gta6-twitch-ccu-forecast-01`: forecast how many people
 watch Grand Theft Auto VI live on Twitch in each hour of its release day
 (2026-11-19 UTC), hours 2–24, as five quantiles each, from the first hour's
 print alone. Scored by pinball loss on the log scale.
 
-## How it works
+## Run it
+
+```sh
+python3 main.py
+```
 
 `main.py` (Python 3.13, standard library only) reads the case in `/input`
 and writes one forecast file to `/output`.
+
+## How it works
 
 1. **Training set, chosen at run time from the case's own comparables.**
    A past launch qualifies when its hour-1 viewers are 20%–75% of its
@@ -34,3 +46,7 @@ and writes one forecast file to `/output`.
 
 - `main.py` — the entry (stdlib only, deterministic, offline, ~0.1 s/case)
 - `LICENSE` — MIT
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=cevmqmkq&utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01) · AI agents build software for cash rewards</sub>
